@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   const { email, name, password, role } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
-  if (!['staff', 'admin'].includes(role)) return res.status(400).json({ error: 'Role must be staff or admin' });
+  if (!['staff', 'admin', 'demo'].includes(role)) return res.status(400).json({ error: 'Role must be staff, admin, or demo' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
   try {
@@ -62,7 +62,7 @@ router.put('/:id/password', async (req, res) => {
 // Update role
 router.put('/:id/role', async (req, res) => {
   const { role } = req.body;
-  if (!['staff', 'admin'].includes(role)) return res.status(400).json({ error: 'Role must be staff or admin' });
+  if (!['staff', 'admin', 'demo'].includes(role)) return res.status(400).json({ error: 'Role must be staff, admin, or demo' });
 
   try {
     const { rows, rowCount } = await pool.query(

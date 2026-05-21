@@ -3,7 +3,7 @@ import { usersAPI } from '../services/api'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
-const ROLE_LABELS = { admin: 'Administrator', staff: 'Standard' }
+const ROLE_LABELS = { admin: 'Administrator', staff: 'Standard', demo: 'Demo' }
 
 function Badge({ active }) {
   return (
@@ -60,6 +60,7 @@ function AddUserModal({ onClose, onCreated }) {
             <select value={form.role} onChange={e => set('role', e.target.value)} className="input-field">
               <option value="staff">Standard</option>
               <option value="admin">Administrator</option>
+              <option value="demo">Demo</option>
             </select>
           </div>
           <div className="flex gap-3 pt-2">
@@ -215,6 +216,7 @@ export default function UserManagement() {
                         >
                           <option value="staff">Standard</option>
                           <option value="admin">Administrator</option>
+                          <option value="demo">Demo</option>
                         </select>
                       </td>
                       <td className="px-4 py-3"><Badge active={u.is_active} /></td>
