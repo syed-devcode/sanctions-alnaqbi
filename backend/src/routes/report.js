@@ -37,6 +37,26 @@ function riskColor(level) {
   return '#1a7a1a';
 }
 
+// Strip characters outside Helvetica's supported range (printable ASCII +
+// Latin-1 Supplement).  Arabic, CJK, and other Unicode blocks have no glyphs
+// in the built-in PDF fonts and render as garbage.
+function cleanText(val) {
+  if (val === null || val === undefined) return '—';
+  const cleaned = String(val)
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '')  // keep printable ASCII + Latin-1
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || '—';
+}
+
+function aliasesToText(aliases) {
+  if (!aliases || !aliases.length) return '—';
+  return aliases
+    .map(a => cleanText(typeof a === 'string' ? a : a.alias_name))
+    .filter(s => s && s !== '—')
+    .join(', ') || '—';
+}
+
 // ── Route ────────────────────────────────────────────────────────────────────
 router.post('/', requireAuth, (req, res) => {
   const { query, risk_level, results, searched_at } = req.body;
@@ -175,21 +195,19 @@ router.post('/', requireAuth, (req, res) => {
     // ── Table rows ────────────────────────────────────────────────────────
     let rowIdx = 0;
     for (const r of results) {
-      const matchedText  = r.matched_aliases?.map(a => a.alias_name).join('\n')
-                         || r.matched_alias || '—';
-      const allAliasText = r.all_aliases?.map(a => a.alias_name).join('\n')
-                         || r.matched_alias || '—';
+      const matchedText  = aliasesToText(r.matched_aliases || (r.matched_alias ? [r.matched_alias] : []));
+      const allAliasText = aliasesToText(r.all_aliases    || (r.matched_alias ? [r.matched_alias] : []));
 
       // Pre-measure each cell to find the tallest
       doc.fontSize(8).font('Helvetica');
       const cells = [
-        { text: riskLabel(r.risk_level),  w: COL.risk        - 6 },
-        { text: r.primary_name || '—',    w: COL.name        - 6 },
-        { text: matchedText,              w: COL.alias       - 6 },
-        { text: allAliasText,             w: COL.allAliases  - 6 },
-        { text: r.source || '—',          w: COL.source      - 6 },
-        { text: r.nationality || '—',     w: COL.nationality - 6 },
-        { text: r.dob || '—',             w: COL.dob         - 6 },
+        { text: riskLabel(r.risk_level),         w: COL.risk        - 6 },
+        { text: cleanText(r.primary_name),        w: COL.name        - 6 },
+        { text: matchedText,                      w: COL.alias       - 6 },
+        { text: allAliasText,                     w: COL.allAliases  - 6 },
+        { text: cleanText(r.source),              w: COL.source      - 6 },
+        { text: cleanText(r.nationality),         w: COL.nationality - 6 },
+        { text: cleanText(r.dob),                 w: COL.dob         - 6 },
       ];
       const contentH = Math.max(...cells.map(c => doc.heightOfString(c.text, { width: c.w })), 12);
       const rowH     = contentH + 8;
@@ -225,12 +243,12 @@ router.post('/', requireAuth, (req, res) => {
       cx += COL.risk;
 
       doc.font('Helvetica').fillColor('#111111');
-      doc.text(r.primary_name  || '—', cx, ty, { width: COL.name        - 6, lineBreak: true }); cx += COL.name;
-      doc.text(matchedText,             cx, ty, { width: COL.alias       - 6, lineBreak: true }); cx += COL.alias;
-      doc.text(allAliasText,            cx, ty, { width: COL.allAliases  - 6, lineBreak: true }); cx += COL.allAliases;
-      doc.text(r.source        || '—', cx, ty, { width: COL.source      - 6, lineBreak: true }); cx += COL.source;
-      doc.text(r.nationality   || '—', cx, ty, { width: COL.nationality - 6, lineBreak: true }); cx += COL.nationality;
-      doc.text(r.dob           || '—', cx, ty, { width: COL.dob         - 6, lineBreak: true });
+      doc.text(cleanText(r.primary_name), cx, ty, { width: COL.name        - 6, lineBreak: true }); cx += COL.name;
+      doc.text(matchedText,               cx, ty, { width: COL.alias       - 6, lineBreak: true }); cx += COL.alias;
+      doc.text(allAliasText,              cx, ty, { width: COL.allAliases  - 6, lineBreak: true }); cx += COL.allAliases;
+      doc.text(cleanText(r.source),       cx, ty, { width: COL.source      - 6, lineBreak: true }); cx += COL.source;
+      doc.text(cleanText(r.nationality),  cx, ty, { width: COL.nationality - 6, lineBreak: true }); cx += COL.nationality;
+      doc.text(cleanText(r.dob),          cx, ty, { width: COL.dob         - 6, lineBreak: true });
 
       doc.y = ry + rowH;
       rowIdx++;
