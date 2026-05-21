@@ -8,14 +8,17 @@ const { parseUAE } = require('../parsers/uaeParser');
 const UN_URL  = 'https://scsanctions.un.org/resources/xml/en/consolidated.xml';
 const UAE_URL = 'https://data.opensanctions.org/datasets/latest/ae_local_terrorists/targets.nested.json';
 
-const BATCH_SIZE      = 100;
-const SYNC_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const BATCH_SIZE      = 50;
+const BATCH_DELAY_MS  = 1000;          // 1 s pause between batches
+const SYNC_TIMEOUT_MS = 10 * 60 * 1000; // 10-minute hard cap
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
     new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Sync timed out after 5 minutes')), ms)
+      setTimeout(() => reject(new Error(`Sync timed out after ${ms / 60000} minutes`)), ms)
     ),
   ]);
 }
@@ -45,8 +48,81 @@ function fetchFromUrl(url, maxRedirects = 5) {
   });
 }
 
-// Upserts records in batches of BATCH_SIZE, each batch in its own transaction.
-// Old records remain intact until all batches complete — then stale ones are removed.
+// Upsert one batch of records using bulk SQL (unnest) — 3 queries per batch
+// instead of N entry inserts + N×M alias inserts.
+async function importBatch(batch, client) {
+  // ── 1. Bulk UPSERT entries ─────────────────────────────────────────────────
+  const { rows: entryRows } = await client.query(
+    `INSERT INTO sanctions_entries
+       (source, source_id, entity_type, primary_name, nationality, dob,
+        passport_number, national_id, address, listed_on, additional_info)
+     SELECT * FROM unnest(
+       $1::text[],  $2::text[],  $3::text[],  $4::text[],  $5::text[],  $6::text[],
+       $7::text[],  $8::text[],  $9::text[],  $10::date[], $11::jsonb[]
+     )
+     ON CONFLICT (source, source_id) DO UPDATE SET
+       primary_name    = EXCLUDED.primary_name,
+       nationality     = EXCLUDED.nationality,
+       dob             = EXCLUDED.dob,
+       passport_number = EXCLUDED.passport_number,
+       national_id     = EXCLUDED.national_id,
+       address         = EXCLUDED.address,
+       listed_on       = EXCLUDED.listed_on,
+       additional_info = EXCLUDED.additional_info,
+       updated_at      = now()
+     RETURNING id, source_id`,
+    [
+      batch.map(r => r.source),
+      batch.map(r => r.source_id),
+      batch.map(r => r.entity_type),
+      batch.map(r => r.primary_name),
+      batch.map(r => r.nationality),
+      batch.map(r => r.dob),
+      batch.map(r => r.passport_number),
+      batch.map(r => r.national_id),
+      batch.map(r => r.address),
+      batch.map(r => r.listed_on || null),
+      batch.map(r => JSON.stringify(r.additional_info)),
+    ]
+  );
+
+  // Build source_id → uuid map from the RETURNING rows
+  const idMap = {};
+  for (const row of entryRows) idMap[row.source_id] = row.id;
+  const entryIds = entryRows.map(r => r.id);
+
+  // ── 2. Replace aliases: delete then bulk-insert ───────────────────────────
+  await client.query('DELETE FROM aliases WHERE entry_id = ANY($1::uuid[])', [entryIds]);
+
+  const aliasEntryIds = [];
+  const aliasNames    = [];
+  const aliasTypes    = [];
+  const aliasQualities = [];
+
+  for (const rec of batch) {
+    const entryId = idMap[rec.source_id];
+    if (!entryId) continue;
+    for (const alias of rec.aliases) {
+      aliasEntryIds.push(entryId);
+      aliasNames.push(alias.alias_name);
+      aliasTypes.push(alias.alias_type);
+      aliasQualities.push(alias.quality || null);
+    }
+  }
+
+  if (aliasEntryIds.length > 0) {
+    await client.query(
+      `INSERT INTO aliases (entry_id, alias_name, alias_type, quality)
+       SELECT * FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[])`,
+      [aliasEntryIds, aliasNames, aliasTypes, aliasQualities]
+    );
+  }
+
+  return batch.length;
+}
+
+// Process all records in BATCH_SIZE chunks with a short pause between each.
+// Old records remain intact throughout — stale ones removed only after full success.
 async function importRecords(records, source) {
   let imported = 0;
   const processedSourceIds = [];
@@ -57,45 +133,11 @@ async function importRecords(records, source) {
 
     try {
       await client.query('BEGIN');
-
-      for (const rec of batch) {
-        const { rows } = await client.query(
-          `INSERT INTO sanctions_entries
-             (source, source_id, entity_type, primary_name, nationality, dob,
-              passport_number, national_id, address, listed_on, additional_info)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-           ON CONFLICT (source, source_id) DO UPDATE SET
-             primary_name    = EXCLUDED.primary_name,
-             nationality     = EXCLUDED.nationality,
-             dob             = EXCLUDED.dob,
-             passport_number = EXCLUDED.passport_number,
-             national_id     = EXCLUDED.national_id,
-             address         = EXCLUDED.address,
-             listed_on       = EXCLUDED.listed_on,
-             additional_info = EXCLUDED.additional_info,
-             updated_at      = now()
-           RETURNING id`,
-          [
-            rec.source, rec.source_id, rec.entity_type, rec.primary_name,
-            rec.nationality, rec.dob, rec.passport_number, rec.national_id,
-            rec.address, rec.listed_on, JSON.stringify(rec.additional_info),
-          ]
-        );
-
-        const entryId = rows[0].id;
-        await client.query('DELETE FROM aliases WHERE entry_id = $1', [entryId]);
-        for (const alias of rec.aliases) {
-          await client.query(
-            'INSERT INTO aliases (entry_id, alias_name, alias_type, quality) VALUES ($1,$2,$3,$4)',
-            [entryId, alias.alias_name, alias.alias_type, alias.quality]
-          );
-        }
-
-        processedSourceIds.push(rec.source_id);
-        imported++;
-      }
-
+      await importBatch(batch, client);
       await client.query('COMMIT');
+
+      batch.forEach(r => processedSourceIds.push(r.source_id));
+      imported += batch.length;
       console.log(`[Sync] ${source}: ${imported}/${records.length} records processed`);
     } catch (err) {
       await client.query('ROLLBACK');
@@ -103,16 +145,17 @@ async function importRecords(records, source) {
     } finally {
       client.release();
     }
+
+    // Pause between batches to avoid overwhelming the DB connection pool
+    if (i + BATCH_SIZE < records.length) await sleep(BATCH_DELAY_MS);
   }
 
-  // Remove records that are no longer in the source list
+  // Remove records that no longer appear in the source list
   const { rowCount } = await pool.query(
     'DELETE FROM sanctions_entries WHERE source = $1 AND source_id != ALL($2::text[])',
     [source, processedSourceIds]
   );
-  if (rowCount > 0) {
-    console.log(`[Sync] ${source}: removed ${rowCount} stale records`);
-  }
+  if (rowCount > 0) console.log(`[Sync] ${source}: removed ${rowCount} stale records`);
 
   return imported;
 }
@@ -134,7 +177,7 @@ async function runSync(source = 'ALL', triggeredBy = 'manual') {
 
       console.log(`[Sync] Parsing ${src} data...`);
       const records = src === 'UN' ? await parseUN(content) : parseUAE(content);
-      console.log(`[Sync] Parsed ${records.length} records. Importing in batches of ${BATCH_SIZE}...`);
+      console.log(`[Sync] Parsed ${records.length} records — importing in batches of ${BATCH_SIZE}...`);
 
       const imported = await withTimeout(importRecords(records, src), SYNC_TIMEOUT_MS);
 
@@ -154,7 +197,6 @@ async function runSync(source = 'ALL', triggeredBy = 'manual') {
 }
 
 function scheduleWeeklySync() {
-  // Every Sunday at midnight
   cron.schedule('0 0 * * 0', () => {
     console.log('[Cron] Weekly sync triggered');
     runSync('ALL', 'scheduled').catch(console.error);
