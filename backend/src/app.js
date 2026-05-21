@@ -12,6 +12,8 @@ const usersRoutes = require('./routes/users');
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
