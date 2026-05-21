@@ -56,9 +56,15 @@ export default function Navbar() {
               <p className="text-white text-sm font-medium">
                 {user?.name || user?.email}
               </p>
-              <p className="text-slate-400 text-xs capitalize">
-                {user?.role === 'admin' ? 'Administrator' : 'Standard'}
-              </p>
+              {user?.role === 'demo' ? (
+                <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-white">
+                  Demo
+                </span>
+              ) : (
+                <p className="text-slate-400 text-xs capitalize">
+                  {user?.role === 'admin' ? 'Administrator' : 'Standard'}
+                </p>
+              )}
             </div>
             <button onClick={handleLogout} className="btn-secondary text-sm py-1.5">
               Sign out
