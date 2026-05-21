@@ -12,10 +12,12 @@ Live URL: https://sanctions-frontend-production.up.railway.app
 ## Folder Structure
 ```
 /
-├── frontend/          React Vite app (port 5173 dev, 4173 production)
+├── frontend/          React Vite app (port 5173 dev, $PORT production)
 │   ├── src/
-│   │   ├── components/   AdminPanel, AuditLog, LoginForm, Navbar, etc.
-│   │   ├── context/      AuthContext.jsx (JWT state)
+│   │   ├── components/   AdminPanel, AuditLog, LoginForm, Navbar,
+│   │   │                 SearchBar, ResultsTable, MatchModal,
+│   │   │                 UserManagement, Footer
+│   │   ├── context/      AuthContext.jsx (JWT + demo state)
 │   │   ├── pages/        Login, Search, Admin
 │   │   ├── services/     api.js (axios, uses VITE_API_URL)
 │   │   └── assets/       alnaqbi_logo.png
@@ -29,7 +31,7 @@ Live URL: https://sanctions-frontend-production.up.railway.app
 │   │   ├── middleware/ auth.js (JWT)
 │   │   └── db.js      pg Pool (DATABASE_URL)
 │   └── .env           credentials (never commit)
-├── data/              local copies of source files (not used by app)
+├── data/              unused — app fetches directly from URLs
 └── schema.sql         full database schema (run once in Supabase SQL Editor)
 ```
 
@@ -43,16 +45,25 @@ Live URL: https://sanctions-frontend-production.up.railway.app
 ### Tables
 | Table | Purpose |
 |---|---|
-| `users` | Staff/admin accounts (pgcrypto passwords, is_active flag) |
+| `users` | Staff/admin/demo accounts (pgcrypto passwords, is_active, demo counters) |
 | `sanctions_entries` | One row per sanctioned person/entity (source: UN or UAE) |
-| `aliases` | Every name variant per entry — primary search surface |
+| `aliases` | Separate table — every name variant per entry, joined via `entry_id` |
 | `audit_logs` | Every search: user, timestamp, query, risk level, result snapshot |
 | `sync_logs` | Import history for manual and scheduled syncs |
+
+### Key column names
+- `sanctions_entries.primary_name` — the main display name (not `full_name`)
+- `aliases.entry_id` — FK to `sanctions_entries.id` (ON DELETE CASCADE)
+- `aliases.alias_name` — the searchable name string
+- `users.demo_searches_used` — integer, default 0
+- `users.demo_expires_at` — nullable timestamptz
+- `users.role` — CHECK constraint: `admin`, `staff`, `demo`
 
 ## Password Notes
 - Supabase DB password: stored in `DATABASE_URL`
 - App admin password: `Bionics7`
 - Passwords stored and verified using **pgcrypto** `crypt()` in SQL — do NOT use bcrypt
+- Login SQL: `WHERE email = $1 AND password_hash = crypt($2, password_hash) AND is_active = true`
 
 ## Running Locally
 
@@ -78,15 +89,15 @@ npm run dev     # port 5173
 
 ### Frontend service: `sanctions-frontend`
 - URL: https://sanctions-frontend-production.up.railway.app
-- Port: dynamic (`$PORT`), served with `serve -s dist`
-- Config: `frontend/railway.toml`
+- Port: dynamic (`$PORT`), served with `serve -s dist -l $PORT`
+- `serve` is in `dependencies` (not devDependencies) so it's available at runtime
 
 ## Railway Environment Variables
 
 ### Backend
 | Variable | Value |
 |---|---|
-| `DATABASE_URL` | PostgreSQL Transaction Pooler connection string |
+| `DATABASE_URL` | PostgreSQL Transaction Pooler connection string (port 6543) |
 | `SUPABASE_URL` | https://nmwzgyhgtezyevkahjgr.supabase.co |
 | `SUPABASE_ANON_KEY` | stored in Railway |
 | `SUPABASE_SERVICE_ROLE_KEY` | stored in Railway |
@@ -102,31 +113,65 @@ npm run dev     # port 5173
 
 > `VITE_*` variables are baked in at **build time**. After changing them you must redeploy the frontend.
 
+## Backend Config Notes
+- `app.set('trust proxy', 1)` — must be first, before rate limiter; required on Railway
+- CORS: function-based origin allowlist, `credentials: true`, explicit `OPTIONS` preflight handler
+- Password verification: pgcrypto SQL `crypt($2, password_hash)` — bcrypt is not used anywhere
+- JWT expiry: 8 hours; token contains `{ id, email, role }`
+
 ## Search Architecture
-Search uses PostgreSQL full-text search for exact whole-word filtering combined with `word_similarity` (pg_trgm) for scoring:
+Search runs a direct SQL query (not the stored function) so all matching aliases are captured:
 
 ```sql
-WHERE to_tsvector('simple', alias_name) @@ plainto_tsquery('simple', query_text)
-ORDER BY word_similarity(query_text, alias_name) DESC
+SELECT ... FROM aliases a
+JOIN sanctions_entries se ON a.entry_id = se.id
+WHERE to_tsvector('simple', a.alias_name) @@ plainto_tsquery('simple', $1)
+  AND word_similarity($1, a.alias_name) >= $2
+ORDER BY word_similarity($1, a.alias_name) DESC
 ```
 
-- `'simple'` dictionary: no stemming, no stop words, exact word tokens
-- Searches primary name AND all aliases (individuals and entities)
-- Searches UN list and UAE list simultaneously
+- No `DISTINCT ON` — returns one row per **matching alias**, grouped in Node.js by `entry_id`
+- Each result includes `matched_aliases[]` (aliases that hit the query) and `all_aliases[]` (every stored alias for the entry)
+- Results table shows all matched aliases stacked; modal shows all known aliases with matched ones highlighted
 - Risk levels: `similarity >= 0.9` → Confirmed Match, `>= 0.4` → Possible Match
+- Second query fetches all aliases for matched entries: `WHERE entry_id = ANY($1::uuid[])`
 
 ## Data Sources (Auto Sync)
 - **UN List:** https://scsanctions.un.org/resources/xml/en/consolidated.xml
 - **UAE List:** https://data.opensanctions.org/datasets/latest/ae_local_terrorists/targets.nested.json
-- Auto sync every **Sunday at midnight** (`node-cron`)
+- Auto sync every **Sunday at midnight** (`node-cron`, `'0 0 * * 0'`)
 - Manual sync available in admin panel (UN / UAE / Both)
-- Sync deletes all existing records for the source, then inserts fresh data
+- Sync: DELETE all rows for source (aliases cascade) → INSERT fresh data
+- Parsers accept content as string parameter (no local file dependency)
 
-## Backend Config Notes
-- `app.set('trust proxy', 1)` enabled — required for `express-rate-limit` on Railway
-- CORS configured for Railway frontend URL + localhost dev ports
-- Password verification uses pgcrypto SQL: `crypt($2, password_hash)`
-- JWT expiry: 8 hours
+## PDF Report
+- Generated with PDFKit in `backend/src/routes/report.js`
+- **Header:** company logo (if found) + "SANCTIONS SCREENING REPORT" + divider line
+- **Columns:** Risk | Primary Name | Matched Alias | All Aliases | Src | Nationality | DOB
+- Column widths sum to exactly 495pt (A4 content width)
+- Row heights calculated with `doc.heightOfString()` — no text overflow
+- Alternating row backgrounds + vertical grid lines
+- **Footer** (every page, absolute position): disclaimer + © 2026 Al Naqbi & Partners + page number
+- Logo loaded from `backend/assets/alnaqbi_logo.png` (production) or `frontend/src/assets/alnaqbi_logo.png` (local dev)
+- All text sanitised through `cleanText()` — strips non-Latin-1 characters (Arabic script aliases render as garbage in Helvetica)
+- Aliases joined with `, ` separator (not newlines)
+- Demo users cannot export PDF
+
+## Demo User Feature
+- Role `demo` is valid in the `users` table (`CHECK (role IN ('admin', 'staff', 'demo'))`)
+- `demo_searches_used` column tracks total searches used (integer, default 0)
+- `demo_expires_at` column for optional expiry (nullable timestamptz)
+- **Limit:** 10 searches total; counter checked live from DB before each search (not from JWT)
+- **Backend block:** returns `{ error: '...', limitReached: true }` with HTTP 403 when `demo_searches_used >= 10`
+- **Increment:** `UPDATE users SET demo_searches_used = demo_searches_used + 1` after successful search
+- **Response:** includes `remainingSearches` count on every search response
+- **Login response:** includes `demo_searches_used` so banner is correct on first page load
+- **Frontend banner:** amber "Demo Account — X of 10 searches remaining" with progress bar
+- **At limit:** red banner with contact email; search input and button disabled
+- **Export PDF:** hidden for demo users
+- **Admin panel:** not accessible to demo users
+- **Navbar:** shows orange "Demo" badge instead of role text
+- **Admin can:** create demo users, change role to/from demo, see usage in user management table
 
 ## Admin User
 - **Email:** syed.faisal@alnaqbipartners.com
@@ -134,23 +179,32 @@ ORDER BY word_similarity(query_text, alias_name) DESC
 - **Role:** admin
 
 ## Features
-- JWT login for staff (8h expiry), deactivatable accounts
-- Whole-word name search across primary names and all aliases
+- JWT login for staff/admin/demo (8h expiry), deactivatable accounts
+- Whole-word name search across ALL aliases (primary name + every known alias)
+- All matching aliases shown per result — not just the best one
 - Risk levels: Clear / Possible Match / Confirmed Match
-- Match details modal with all entry fields
-- Search audit log (staff see own, admin sees all)
-- PDF screening report export (per match or full results)
-- User management (admin only): add users, set role, reset password, deactivate/activate
-- Admin panel: data source status cards (last sync time, record counts, records added)
-- Manual + weekly auto sync from official URLs
-- Footer: © 2026 Al Naqbi & Partners. All rights reserved. / Developed by Syed Faisal Naseem
-- Logo: `frontend/src/assets/alnaqbi_logo.png` (mix-blend-mode: screen on dark backgrounds)
+- Match details modal: Matched Aliases section + All Known Aliases section (matched ones highlighted)
+- Search audit log (staff see own, admin sees all; demo cannot access)
+- PDF screening report export with professional layout and per-page footer
+- User management (admin only): add users (staff/admin/demo), role change, password reset, deactivate/activate
+- Admin panel: data source status cards (last sync time, total records, records added per sync)
+- Manual + weekly auto sync from official URLs (no local file dependency)
+- Footer on all pages: © 2026 Al Naqbi & Partners. All rights reserved. / Developed by Syed Faisal Naseem
+- Logo: `frontend/src/assets/alnaqbi_logo.png` (`mix-blend-mode: screen` on dark backgrounds)
 
 ## GitHub
 https://github.com/syed-devcode/sanctions-alnaqbi
 
+## Deployment Workflow
+1. `git add .` → `git commit` → `git push`
+2. Railway auto-deploys backend and frontend on push
+3. After **schema changes**: run the ALTER TABLE SQL in Supabase SQL Editor first
+4. After **`VITE_*` variable changes**: must redeploy frontend (variables are build-time only)
+5. After **demo counter reset**: done via admin panel or direct SQL in Supabase
+
 ## Important Notes
 - Do **not** commit `/backend/.env`
-- Always use Transaction Pooler URL for `DATABASE_URL` — direct connection (port 5432) fails on Railway
-- `VITE_*` env vars are build-time only — redeploy frontend after any change
-- `schema.sql` seeds the default admin user with a pgcrypto hash
+- Always use Transaction Pooler URL (port 6543) for `DATABASE_URL` — direct connection fails on Railway
+- `bcrypt` / `bcryptjs` is **not used** — pgcrypto only
+- The `aliases` table is separate from `sanctions_entries`, joined via `entry_id` FK
+- PDF text encoding: Helvetica only supports Latin-1; Arabic aliases are stripped by `cleanText()` before rendering
