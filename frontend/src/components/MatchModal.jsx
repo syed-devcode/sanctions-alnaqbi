@@ -61,6 +61,34 @@ export default function MatchModal({ match, query, searchedAt, onClose }) {
         <div className="overflow-y-auto px-6 py-4 flex-1">
           <div className="grid grid-cols-1 gap-0">
             <Row label="Matched Alias" value={match.matched_alias} />
+
+            {/* All known aliases for this entry */}
+            {match.all_aliases && match.all_aliases.length > 0 && (
+              <div className="py-2 border-b border-gray-100">
+                <p className="text-sm font-medium text-gray-500 mb-2">All Known Aliases</p>
+                <div className="space-y-1">
+                  {match.all_aliases.map((a, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className={`text-sm flex-1 ${a.alias_name === match.matched_alias ? 'font-semibold text-slate-900' : 'text-gray-700'}`}>
+                        {a.alias_name}
+                      </span>
+                      <div className="flex gap-1 flex-shrink-0">
+                        {a.alias_name === match.matched_alias && (
+                          <span className="text-xs px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded">matched</span>
+                        )}
+                        {a.alias_type === 'primary' && (
+                          <span className="text-xs px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">primary</span>
+                        )}
+                        {a.quality && (
+                          <span className="text-xs text-gray-400 capitalize">{a.quality}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <Row label="Source List" value={match.source === 'UN' ? 'United Nations Consolidated List' : 'UAE Local Terrorists List'} />
             <Row label="Entity Type" value={match.entity_type?.charAt(0).toUpperCase() + match.entity_type?.slice(1)} />
             <Row label="Similarity Score" value={match.similarity_score ? `${(match.similarity_score * 100).toFixed(1)}%` : null} />
