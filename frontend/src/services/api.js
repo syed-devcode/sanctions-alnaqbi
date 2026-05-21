@@ -39,6 +39,7 @@ export const reportAPI = {
 export const syncAPI = {
   trigger: (source = 'ALL') => api.post('/sync', { source }),
   getLogs: () => api.get('/sync/logs'),
+  getStatus: () => api.get('/sync/status'),
 }
 
 export const usersAPI = {

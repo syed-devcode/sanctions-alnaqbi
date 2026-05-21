@@ -1,9 +1,39 @@
+const https = require('https');
+const http = require('http');
 const cron = require('node-cron');
 const pool = require('../db');
 const { parseUN } = require('../parsers/unParser');
 const { parseUAE } = require('../parsers/uaeParser');
 
+const UN_URL  = 'https://scsanctions.un.org/resources/xml/en/consolidated.xml';
+const UAE_URL = 'https://data.opensanctions.org/datasets/latest/ae_local_terrorists/targets.nested.json';
+
 const BATCH_SIZE = 200;
+
+function fetchFromUrl(url, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https://') ? https : http;
+    const req = client.get(url, { timeout: 120000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (maxRedirects === 0) return reject(new Error('Too many redirects'));
+        return resolve(fetchFromUrl(res.headers.location, maxRedirects - 1));
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
+      }
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`Request timed out fetching ${url}`));
+    });
+  });
+}
 
 async function importRecords(records, source, client) {
   let imported = 0;
@@ -37,9 +67,7 @@ async function importRecords(records, source, client) {
 
       const entryId = rows[0].id;
 
-      // Replace aliases for this entry
       await client.query('DELETE FROM aliases WHERE entry_id = $1', [entryId]);
-
       for (const alias of rec.aliases) {
         await client.query(
           'INSERT INTO aliases (entry_id, alias_name, alias_type, quality) VALUES ($1,$2,$3,$4)',
@@ -66,10 +94,19 @@ async function runSync(source = 'ALL', triggeredBy = 'manual') {
     const client = await pool.connect();
 
     try {
-      console.log(`[Sync] Starting ${src} import...`);
+      const url = src === 'UN' ? UN_URL : UAE_URL;
+      console.log(`[Sync] Fetching ${src} data from ${url}`);
+      const content = await fetchFromUrl(url);
+
+      console.log(`[Sync] Parsing ${src} data...`);
+      const records = src === 'UN' ? await parseUN(content) : parseUAE(content);
+      console.log(`[Sync] Parsed ${records.length} records. Importing...`);
+
       await client.query('BEGIN');
 
-      const records = src === 'UN' ? await parseUN() : parseUAE();
+      // Full replace: delete all existing records for this source (aliases cascade)
+      await client.query('DELETE FROM sanctions_entries WHERE source = $1', [src]);
+
       const imported = await importRecords(records, src, client);
 
       await client.query('COMMIT');
@@ -92,12 +129,12 @@ async function runSync(source = 'ALL', triggeredBy = 'manual') {
 }
 
 function scheduleWeeklySync() {
-  // Every Sunday at 02:00 AM
-  cron.schedule('0 2 * * 0', () => {
+  // Every Sunday at midnight
+  cron.schedule('0 0 * * 0', () => {
     console.log('[Cron] Weekly sync triggered');
     runSync('ALL', 'scheduled').catch(console.error);
   });
-  console.log('[Cron] Weekly sync scheduled (Sundays 02:00)');
+  console.log('[Cron] Weekly sync scheduled (Sundays 00:00)');
 }
 
 module.exports = { runSync, scheduleWeeklySync };

@@ -1,8 +1,3 @@
-const fs = require('fs');
-const path = require('path');
-
-const UAE_FILE = path.join(__dirname, '../../../data/targets.nested.json');
-
 // ISO-2 country codes to full names (subset covering common nationalities)
 const COUNTRY_CODES = {
   ae: 'UAE', lb: 'Lebanon', sy: 'Syria', iq: 'Iraq', ir: 'Iran',
@@ -66,8 +61,7 @@ function parseRecord(obj) {
   };
 }
 
-function parseUAE() {
-  const content = fs.readFileSync(UAE_FILE, 'utf-8');
+function parseUAE(content) {
   const lines = content.split('\n').filter(Boolean);
 
   const records = [];

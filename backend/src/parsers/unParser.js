@@ -1,8 +1,4 @@
-const fs = require('fs');
-const path = require('path');
 const xml2js = require('xml2js');
-
-const UN_FILE = path.join(__dirname, '../../../data/consolidatedLegacyByNAME.xml');
 
 // xml2js returns every field as an array; this safely grabs the first value
 function first(val) {
@@ -132,9 +128,8 @@ function parseEntity(ent) {
   };
 }
 
-async function parseUN() {
-  const xml = fs.readFileSync(UN_FILE, 'utf-8');
-  const result = await xml2js.parseStringPromise(xml, { explicitArray: true, trim: true });
+async function parseUN(xmlContent) {
+  const result = await xml2js.parseStringPromise(xmlContent, { explicitArray: true, trim: true });
   const list = result.CONSOLIDATED_LIST;
 
   const records = [];
