@@ -8,7 +8,17 @@ const { parseUAE } = require('../parsers/uaeParser');
 const UN_URL  = 'https://scsanctions.un.org/resources/xml/en/consolidated.xml';
 const UAE_URL = 'https://data.opensanctions.org/datasets/latest/ae_local_terrorists/targets.nested.json';
 
-const BATCH_SIZE = 200;
+const BATCH_SIZE      = 100;
+const SYNC_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Sync timed out after 5 minutes')), ms)
+    ),
+  ]);
+}
 
 function fetchFromUrl(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
@@ -35,48 +45,73 @@ function fetchFromUrl(url, maxRedirects = 5) {
   });
 }
 
-async function importRecords(records, source, client) {
+// Upserts records in batches of BATCH_SIZE, each batch in its own transaction.
+// Old records remain intact until all batches complete — then stale ones are removed.
+async function importRecords(records, source) {
   let imported = 0;
+  const processedSourceIds = [];
 
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
+    const client = await pool.connect();
 
-    for (const rec of batch) {
-      const { rows } = await client.query(
-        `INSERT INTO sanctions_entries
-           (source, source_id, entity_type, primary_name, nationality, dob,
-            passport_number, national_id, address, listed_on, additional_info)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-         ON CONFLICT (source, source_id) DO UPDATE SET
-           primary_name    = EXCLUDED.primary_name,
-           nationality     = EXCLUDED.nationality,
-           dob             = EXCLUDED.dob,
-           passport_number = EXCLUDED.passport_number,
-           national_id     = EXCLUDED.national_id,
-           address         = EXCLUDED.address,
-           listed_on       = EXCLUDED.listed_on,
-           additional_info = EXCLUDED.additional_info,
-           updated_at      = now()
-         RETURNING id`,
-        [
-          rec.source, rec.source_id, rec.entity_type, rec.primary_name,
-          rec.nationality, rec.dob, rec.passport_number, rec.national_id,
-          rec.address, rec.listed_on, JSON.stringify(rec.additional_info),
-        ]
-      );
+    try {
+      await client.query('BEGIN');
 
-      const entryId = rows[0].id;
-
-      await client.query('DELETE FROM aliases WHERE entry_id = $1', [entryId]);
-      for (const alias of rec.aliases) {
-        await client.query(
-          'INSERT INTO aliases (entry_id, alias_name, alias_type, quality) VALUES ($1,$2,$3,$4)',
-          [entryId, alias.alias_name, alias.alias_type, alias.quality]
+      for (const rec of batch) {
+        const { rows } = await client.query(
+          `INSERT INTO sanctions_entries
+             (source, source_id, entity_type, primary_name, nationality, dob,
+              passport_number, national_id, address, listed_on, additional_info)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (source, source_id) DO UPDATE SET
+             primary_name    = EXCLUDED.primary_name,
+             nationality     = EXCLUDED.nationality,
+             dob             = EXCLUDED.dob,
+             passport_number = EXCLUDED.passport_number,
+             national_id     = EXCLUDED.national_id,
+             address         = EXCLUDED.address,
+             listed_on       = EXCLUDED.listed_on,
+             additional_info = EXCLUDED.additional_info,
+             updated_at      = now()
+           RETURNING id`,
+          [
+            rec.source, rec.source_id, rec.entity_type, rec.primary_name,
+            rec.nationality, rec.dob, rec.passport_number, rec.national_id,
+            rec.address, rec.listed_on, JSON.stringify(rec.additional_info),
+          ]
         );
+
+        const entryId = rows[0].id;
+        await client.query('DELETE FROM aliases WHERE entry_id = $1', [entryId]);
+        for (const alias of rec.aliases) {
+          await client.query(
+            'INSERT INTO aliases (entry_id, alias_name, alias_type, quality) VALUES ($1,$2,$3,$4)',
+            [entryId, alias.alias_name, alias.alias_type, alias.quality]
+          );
+        }
+
+        processedSourceIds.push(rec.source_id);
+        imported++;
       }
 
-      imported++;
+      await client.query('COMMIT');
+      console.log(`[Sync] ${source}: ${imported}/${records.length} records processed`);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
+  }
+
+  // Remove records that are no longer in the source list
+  const { rowCount } = await pool.query(
+    'DELETE FROM sanctions_entries WHERE source = $1 AND source_id != ALL($2::text[])',
+    [source, processedSourceIds]
+  );
+  if (rowCount > 0) {
+    console.log(`[Sync] ${source}: removed ${rowCount} stale records`);
   }
 
   return imported;
@@ -91,39 +126,29 @@ async function runSync(source = 'ALL', triggeredBy = 'manual') {
       [src, triggeredBy]
     );
     const logId = rows[0].id;
-    const client = await pool.connect();
 
     try {
       const url = src === 'UN' ? UN_URL : UAE_URL;
-      console.log(`[Sync] Fetching ${src} data from ${url}`);
+      console.log(`[Sync] Fetching ${src} from ${url}`);
       const content = await fetchFromUrl(url);
 
       console.log(`[Sync] Parsing ${src} data...`);
       const records = src === 'UN' ? await parseUN(content) : parseUAE(content);
-      console.log(`[Sync] Parsed ${records.length} records. Importing...`);
+      console.log(`[Sync] Parsed ${records.length} records. Importing in batches of ${BATCH_SIZE}...`);
 
-      await client.query('BEGIN');
+      const imported = await withTimeout(importRecords(records, src), SYNC_TIMEOUT_MS);
 
-      // Full replace: delete all existing records for this source (aliases cascade)
-      await client.query('DELETE FROM sanctions_entries WHERE source = $1', [src]);
-
-      const imported = await importRecords(records, src, client);
-
-      await client.query('COMMIT');
       await pool.query(
         `UPDATE sync_logs SET status='completed', records_imported=$1, completed_at=now() WHERE id=$2`,
         [imported, logId]
       );
-      console.log(`[Sync] ${src} complete – ${imported} records imported.`);
+      console.log(`[Sync] ${src} complete — ${imported} records imported.`);
     } catch (err) {
-      await client.query('ROLLBACK');
       await pool.query(
         `UPDATE sync_logs SET status='failed', error_message=$1, completed_at=now() WHERE id=$2`,
         [err.message, logId]
       );
       console.error(`[Sync] ${src} failed:`, err.message);
-    } finally {
-      client.release();
     }
   }
 }

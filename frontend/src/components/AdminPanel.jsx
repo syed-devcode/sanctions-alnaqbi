@@ -74,7 +74,7 @@ export default function AdminPanel() {
     pollRef.current = setInterval(async () => {
       attempts++
       await fetchAll()
-      if (attempts >= 36) {          // stop after 3 minutes
+      if (attempts >= 78) {          // stop after 6.5 minutes (covers 5-min sync timeout)
         clearInterval(pollRef.current)
         pollRef.current = null
       }
