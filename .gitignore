@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/consolidatedLegacyByNAME.xml
+data/targets.nested.json
+dist/
+.DS_Store
+*.log
