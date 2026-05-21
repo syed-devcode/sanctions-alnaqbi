@@ -15,10 +15,12 @@ CREATE TABLE IF NOT EXISTS users (
   email         text        UNIQUE NOT NULL,
   password_hash text        NOT NULL,
   name          text,
-  role          text        NOT NULL DEFAULT 'staff'
-                            CHECK (role IN ('staff', 'admin')),
-  is_active     boolean     NOT NULL DEFAULT true,
-  created_at    timestamptz DEFAULT now()
+  role                text        NOT NULL DEFAULT 'staff'
+                                  CHECK (role IN ('staff', 'admin', 'demo')),
+  is_active           boolean     NOT NULL DEFAULT true,
+  demo_searches_used  int         NOT NULL DEFAULT 0,
+  demo_expires_at     timestamptz,
+  created_at          timestamptz DEFAULT now()
 );
 
 -- ============================================================
