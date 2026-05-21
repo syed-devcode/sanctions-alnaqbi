@@ -17,6 +17,20 @@ router.get('/', requireAuth, async (req, res) => {
   }
 
   try {
+    // Demo limit check — query live counter (not JWT, which is stale after increments)
+    if (req.user.role === 'demo') {
+      const { rows: [demoUser] } = await pool.query(
+        'SELECT demo_searches_used FROM users WHERE id = $1',
+        [req.user.id]
+      );
+      if (!demoUser || demoUser.demo_searches_used >= 10) {
+        return res.status(403).json({
+          error: 'You have reached your demo limit. Please contact syed.faisal@alnaqbipartners.com to upgrade your account.',
+          limitReached: true,
+        });
+      }
+    }
+
     // Return ALL matching alias rows (no DISTINCT ON) so every alias that hits gets captured
     const { rows } = await pool.query(
       `SELECT
@@ -110,7 +124,17 @@ router.get('/', requireAuth, async (req, res) => {
       ]
     );
 
-    res.json({ query: q.trim(), risk_level: riskLevel, count: results.length, results });
+    // Increment demo counter and return remaining searches
+    let remainingSearches = null;
+    if (req.user.role === 'demo') {
+      const { rows: [updated] } = await pool.query(
+        'UPDATE users SET demo_searches_used = demo_searches_used + 1 WHERE id = $1 RETURNING demo_searches_used',
+        [req.user.id]
+      );
+      remainingSearches = 10 - updated.demo_searches_used;
+    }
+
+    res.json({ query: q.trim(), risk_level: riskLevel, count: results.length, results, remainingSearches });
   } catch (err) {
     console.error('Search error:', err);
     res.status(500).json({ error: 'Search failed' });

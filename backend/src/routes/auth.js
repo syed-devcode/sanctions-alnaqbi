@@ -12,7 +12,7 @@ router.post('/login', async (req, res) => {
     console.log('Login attempt:', email);
 
     const { rows } = await pool.query(
-      `SELECT id, email, name, role, is_active
+      `SELECT id, email, name, role, is_active, demo_searches_used
        FROM users
        WHERE email = $1
          AND password_hash = crypt($2, password_hash)
@@ -31,7 +31,16 @@ router.post('/login', async (req, res) => {
       { expiresIn: '8h' }
     );
 
-    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+    res.json({
+      token,
+      user: {
+        id:                  user.id,
+        email:               user.email,
+        name:                user.name,
+        role:                user.role,
+        demo_searches_used:  user.role === 'demo' ? (user.demo_searches_used ?? 0) : undefined,
+      },
+    });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Server error' });

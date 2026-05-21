@@ -1,11 +1,11 @@
 import { useState } from 'react'
 
-export default function SearchBar({ onSearch, loading }) {
+export default function SearchBar({ onSearch, loading, disabled = false }) {
   const [query, setQuery] = useState('')
 
   function handleSubmit(e) {
     e.preventDefault()
-    if (query.trim().length >= 2) onSearch(query.trim())
+    if (!disabled && query.trim().length >= 2) onSearch(query.trim())
   }
 
   return (
@@ -14,13 +14,14 @@ export default function SearchBar({ onSearch, loading }) {
         type="text"
         value={query}
         onChange={e => setQuery(e.target.value)}
-        placeholder="Enter full name or alias to screen…"
-        className="input-field flex-1 text-base py-3"
+        placeholder={disabled ? 'Demo limit reached' : 'Enter full name or alias to screen…'}
+        className={`input-field flex-1 text-base py-3 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         minLength={2}
+        disabled={disabled}
       />
       <button
         type="submit"
-        disabled={loading || query.trim().length < 2}
+        disabled={loading || disabled || query.trim().length < 2}
         className="btn-primary px-6 py-3 text-base"
       >
         {loading ? (
