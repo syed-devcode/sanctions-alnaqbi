@@ -55,7 +55,8 @@ Live URL: https://sanctions-frontend-production.up.railway.app
 - `sanctions_entries.primary_name` — the main display name (not `full_name`)
 - `aliases.entry_id` — FK to `sanctions_entries.id` (ON DELETE CASCADE)
 - `aliases.alias_name` — the searchable name string
-- `users.demo_searches_used` — integer, default 0
+- `users.demo_searches_used` — integer, default 0; tracks searches consumed
+- `users.demo_search_limit` — integer, default 10; per-user configurable limit
 - `users.demo_expires_at` — nullable timestamptz
 - `users.role` — CHECK constraint: `admin`, `staff`, `demo`
 
@@ -159,19 +160,51 @@ ORDER BY word_similarity($1, a.alias_name) DESC
 
 ## Demo User Feature
 - Role `demo` is valid in the `users` table (`CHECK (role IN ('admin', 'staff', 'demo'))`)
-- `demo_searches_used` column tracks total searches used (integer, default 0)
+- `demo_searches_used` column tracks total searches consumed (integer, default 0)
+- `demo_search_limit` column is the per-user configurable cap (integer, default 10)
 - `demo_expires_at` column for optional expiry (nullable timestamptz)
-- **Limit:** 10 searches total; counter checked live from DB before each search (not from JWT)
-- **Backend block:** returns `{ error: '...', limitReached: true }` with HTTP 403 when `demo_searches_used >= 10`
-- **Increment:** `UPDATE users SET demo_searches_used = demo_searches_used + 1` after successful search
-- **Response:** includes `remainingSearches` count on every search response
-- **Login response:** includes `demo_searches_used` so banner is correct on first page load
-- **Frontend banner:** amber "Demo Account — X of 10 searches remaining" with progress bar
+- **Limit:** checked live from DB before each search (not from JWT, which is stale)
+- **Backend block:** returns `{ error: '...', limitReached: true }` with HTTP 403 when `demo_searches_used >= demo_search_limit`
+- **Increment:** `UPDATE users SET demo_searches_used = demo_searches_used + 1 RETURNING demo_searches_used, demo_search_limit`
+- **Response:** includes `remainingSearches = demo_search_limit - demo_searches_used` on every search response
+- **Login response:** includes both `demo_searches_used` and `demo_search_limit` so banner is correct on first page load
+- **Frontend:** uses `user.demo_search_limit ?? 10` (never hardcoded 10) for all banner/progress bar calculations
+- **Frontend banner:** amber "Demo Account — X of Y searches remaining" with progress bar
 - **At limit:** red banner with contact email; search input and button disabled
 - **Export PDF:** hidden for demo users
 - **Admin panel:** not accessible to demo users
 - **Navbar:** shows orange "Demo" badge instead of role text
-- **Admin can:** create demo users, change role to/from demo, see usage in user management table
+
+## Demo Search Limit Control (Admin Panel)
+Admin has full per-user control over demo search allowances from the User Management table:
+
+- **Usage display:** Role column shows `X / Y searches used` below the role dropdown for demo users
+- **Reset Counter:** sets `demo_searches_used = 0` (restores all remaining searches within current limit)
+- **Add Searches:** opens popup → enter a number → adds that amount to `demo_search_limit`
+  - Example: user at 8/10, admin adds 5 → now 8/15 (limit raised, not counter reset)
+- **Change Limit:** opens popup → enter new total → sets `demo_search_limit` to that value
+  - Example: change from 10 to 20 total
+
+### Backend routes (`backend/src/routes/users.js`)
+| Route | Action |
+|---|---|
+| `PUT /users/:id/demo-reset` | Sets `demo_searches_used = 0` |
+| `PUT /users/:id/demo-add` | Adds `{ amount }` to `demo_search_limit` |
+| `PUT /users/:id/demo-limit` | Sets `demo_search_limit` to `{ limit }` |
+
+All three routes require admin auth, verify `role = 'demo'`, and return updated `{ demo_searches_used, demo_search_limit }`.
+
+### Frontend API calls (`frontend/src/services/api.js`)
+```js
+usersAPI.resetDemoCounter(id)
+usersAPI.addDemoSearches(id, amount)
+usersAPI.setDemoLimit(id, limit)
+```
+
+### Migration SQL (run once in Supabase if upgrading an existing DB)
+```sql
+ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_search_limit int NOT NULL DEFAULT 10;
+```
 
 ## Admin User
 - **Email:** syed.faisal@alnaqbipartners.com
@@ -186,7 +219,7 @@ ORDER BY word_similarity($1, a.alias_name) DESC
 - Match details modal: Matched Aliases section + All Known Aliases section (matched ones highlighted)
 - Search audit log (staff see own, admin sees all; demo cannot access)
 - PDF screening report export with professional layout and per-page footer
-- User management (admin only): add users (staff/admin/demo), role change, password reset, deactivate/activate
+- User management (admin only): add users (staff/admin/demo), role change, password reset, deactivate/activate, demo search controls (reset counter, add searches, change limit)
 - Admin panel: data source status cards (last sync time, total records, records added per sync)
 - Manual + weekly auto sync from official URLs (no local file dependency)
 - Footer on all pages: © 2026 Al Naqbi & Partners. All rights reserved. / Developed by Syed Faisal Naseem
