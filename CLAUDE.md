@@ -206,6 +206,46 @@ usersAPI.setDemoLimit(id, limit)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_search_limit int NOT NULL DEFAULT 10;
 ```
 
+## Sync Architecture & Known Issues
+
+### How Sync Works
+- Admin triggers manual sync (or auto-sync fires every Sunday midnight)
+- Backend downloads fresh data from the official source URL
+- Records are **upserted** (not delete-all-then-insert) — old data stays intact during the process
+- Stale records (in DB but not in the new data) are deleted only **after** all batches complete successfully
+- If sync fails at any point, existing records in the database are unaffected
+- The 50MB XML download happens only during sync — NOT during user searches (searches hit Supabase only)
+
+### Sync Process: Batched Bulk Inserts
+- Records are processed in batches of **50** with a 1-second pause between batches
+- Each batch uses 3 bulk SQL queries (`unnest()`) instead of individual row inserts:
+  1. Bulk UPSERT all 50 entries in one query
+  2. Bulk DELETE old aliases for those entries
+  3. Bulk INSERT all new aliases in one query
+- This reduces ~350 individual queries per batch down to 3 — sync completes in under 2 minutes
+- Hard timeout: **10 minutes** — if exceeded, `sync_logs` is marked `failed` automatically
+
+### Stuck Sync Fix (SQL)
+If the admin panel shows "Syncing…" indefinitely (e.g. after a Railway restart mid-sync), run this in Supabase to reset stuck logs:
+```sql
+UPDATE sync_logs SET status = 'failed', error_message = 'Manually reset', completed_at = now()
+WHERE status = 'started';
+```
+
+### Railway Free Tier Notes
+- UN XML is ~50MB — download takes 30–60 seconds on Railway's network
+- The admin panel polls every 5 seconds while sync is running (normal — not a bug)
+- Auto-sync attempts every Sunday midnight regardless; if it times out, existing data is preserved
+- UAE list syncs reliably (smaller JSON file, faster parse)
+
+### Current Database State
+| Source | Records | Origin |
+|---|---|---|
+| UN | ~1,009 | Initial local file load |
+| UAE | varies | Last sync from OpenSanctions |
+
+All records are searchable. New syncs will update the UN count to the current live total.
+
 ## Admin User
 - **Email:** syed.faisal@alnaqbipartners.com
 - **Password:** Bionics7
