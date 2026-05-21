@@ -9,10 +9,15 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const savedToken = localStorage.getItem('ss_token')
-    const savedUser = localStorage.getItem('ss_user')
+    const savedUser  = localStorage.getItem('ss_user')
     if (savedToken && savedUser) {
-      setToken(savedToken)
-      setUser(JSON.parse(savedUser))
+      try {
+        setToken(savedToken)
+        setUser(JSON.parse(savedUser))
+      } catch {
+        localStorage.removeItem('ss_token')
+        localStorage.removeItem('ss_user')
+      }
     }
     setLoading(false)
   }, [])
