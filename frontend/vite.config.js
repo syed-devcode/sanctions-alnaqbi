@@ -9,4 +9,9 @@ export default defineConfig({
       '/api': 'http://localhost:3001',
     },
   },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+    strictPort: true,
+  },
 })
