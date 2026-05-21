@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
                                   CHECK (role IN ('staff', 'admin', 'demo')),
   is_active           boolean     NOT NULL DEFAULT true,
   demo_searches_used  int         NOT NULL DEFAULT 0,
+  demo_search_limit   int         NOT NULL DEFAULT 10,
   demo_expires_at     timestamptz,
   created_at          timestamptz DEFAULT now()
 );

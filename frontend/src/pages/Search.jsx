@@ -9,18 +9,17 @@ import { searchAPI, reportAPI } from '../services/api'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
-const DEMO_LIMIT = 10
-
 export default function Search() {
   const { user, updateUser } = useAuth()
   const isDemo = user?.role === 'demo'
+  const demoLimit = user?.demo_search_limit ?? 10
 
   // Initialise from stored user so the banner is correct right after login
   const [remainingSearches, setRemainingSearches] = useState(
-    isDemo ? DEMO_LIMIT - (user?.demo_searches_used ?? 0) : null
+    isDemo ? demoLimit - (user?.demo_searches_used ?? 0) : null
   )
   const [limitReached, setLimitReached] = useState(
-    isDemo ? (user?.demo_searches_used ?? 0) >= DEMO_LIMIT : false
+    isDemo ? (user?.demo_searches_used ?? 0) >= demoLimit : false
   )
 
   const [loading, setLoading] = useState(false)
@@ -37,7 +36,7 @@ export default function Search() {
 
       // Update demo counter from response
       if (isDemo && res.data.remainingSearches !== null) {
-        const used = DEMO_LIMIT - res.data.remainingSearches
+        const used = demoLimit - res.data.remainingSearches
         setRemainingSearches(res.data.remainingSearches)
         setLimitReached(res.data.remainingSearches <= 0)
         updateUser({ demo_searches_used: used })
@@ -47,7 +46,7 @@ export default function Search() {
       if (data?.limitReached) {
         setLimitReached(true)
         setRemainingSearches(0)
-        updateUser({ demo_searches_used: DEMO_LIMIT })
+        updateUser({ demo_searches_used: demoLimit })
         toast.error(data.error)
       } else {
         toast.error(data?.error || 'Search failed')
@@ -103,14 +102,14 @@ export default function Search() {
               <p className="text-sm text-amber-900">
                 <span className="font-semibold">Demo Account</span>
                 {' — '}
-                <span className="font-bold">{remainingSearches} of {DEMO_LIMIT}</span> searches remaining
+                <span className="font-bold">{remainingSearches} of {demoLimit}</span> searches remaining
               </p>
               <div className="flex gap-0.5 ml-4">
-                {Array.from({ length: DEMO_LIMIT }).map((_, i) => (
+                {Array.from({ length: demoLimit }).map((_, i) => (
                   <div
                     key={i}
                     className={`h-2 w-4 rounded-sm ${
-                      i < DEMO_LIMIT - remainingSearches ? 'bg-amber-400' : 'bg-amber-200'
+                      i < demoLimit - remainingSearches ? 'bg-amber-400' : 'bg-amber-200'
                     }`}
                   />
                 ))}

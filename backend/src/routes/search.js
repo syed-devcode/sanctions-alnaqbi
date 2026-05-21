@@ -20,10 +20,10 @@ router.get('/', requireAuth, async (req, res) => {
     // Demo limit check — query live counter (not JWT, which is stale after increments)
     if (req.user.role === 'demo') {
       const { rows: [demoUser] } = await pool.query(
-        'SELECT demo_searches_used FROM users WHERE id = $1',
+        'SELECT demo_searches_used, demo_search_limit FROM users WHERE id = $1',
         [req.user.id]
       );
-      if (!demoUser || demoUser.demo_searches_used >= 10) {
+      if (!demoUser || demoUser.demo_searches_used >= demoUser.demo_search_limit) {
         return res.status(403).json({
           error: 'You have reached your demo limit. Please contact syed.faisal@alnaqbipartners.com to upgrade your account.',
           limitReached: true,
@@ -128,10 +128,10 @@ router.get('/', requireAuth, async (req, res) => {
     let remainingSearches = null;
     if (req.user.role === 'demo') {
       const { rows: [updated] } = await pool.query(
-        'UPDATE users SET demo_searches_used = demo_searches_used + 1 WHERE id = $1 RETURNING demo_searches_used',
+        'UPDATE users SET demo_searches_used = demo_searches_used + 1 WHERE id = $1 RETURNING demo_searches_used, demo_search_limit',
         [req.user.id]
       );
-      remainingSearches = 10 - updated.demo_searches_used;
+      remainingSearches = updated.demo_search_limit - updated.demo_searches_used;
     }
 
     res.json({ query: q.trim(), risk_level: riskLevel, count: results.length, results, remainingSearches });

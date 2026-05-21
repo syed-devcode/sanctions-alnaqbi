@@ -50,6 +50,9 @@ export const usersAPI = {
   resetPassword: (id, password) => api.put(`/users/${id}/password`, { password }),
   updateRole: (id, role) => api.put(`/users/${id}/role`, { role }),
   updateStatus: (id, is_active) => api.put(`/users/${id}/status`, { is_active }),
+  resetDemoCounter: (id) => api.put(`/users/${id}/demo-reset`),
+  addDemoSearches: (id, amount) => api.put(`/users/${id}/demo-add`, { amount }),
+  setDemoLimit: (id, limit) => api.put(`/users/${id}/demo-limit`, { limit }),
 }
 
 export default api

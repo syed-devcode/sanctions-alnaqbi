@@ -12,7 +12,7 @@ router.post('/login', async (req, res) => {
     console.log('Login attempt:', email);
 
     const { rows } = await pool.query(
-      `SELECT id, email, name, role, is_active, demo_searches_used
+      `SELECT id, email, name, role, is_active, demo_searches_used, demo_search_limit
        FROM users
        WHERE email = $1
          AND password_hash = crypt($2, password_hash)
@@ -39,6 +39,7 @@ router.post('/login', async (req, res) => {
         name:                user.name,
         role:                user.role,
         demo_searches_used:  user.role === 'demo' ? (user.demo_searches_used ?? 0) : undefined,
+        demo_search_limit:   user.role === 'demo' ? (user.demo_search_limit ?? 10) : undefined,
       },
     });
   } catch (err) {
