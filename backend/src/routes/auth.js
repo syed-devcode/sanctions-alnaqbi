@@ -1,5 +1,4 @@
 const router = require('express').Router();
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
 
@@ -13,19 +12,18 @@ router.post('/login', async (req, res) => {
     console.log('Login attempt:', email);
 
     const { rows } = await pool.query(
-      'SELECT id, email, password_hash, name, role, is_active FROM users WHERE email = $1',
-      [email.toLowerCase().trim()]
+      `SELECT id, email, name, role, is_active
+       FROM users
+       WHERE email = $1
+         AND password_hash = crypt($2, password_hash)
+         AND is_active = true`,
+      [email.toLowerCase().trim(), password]
     );
 
     const user = rows[0];
-    console.log('User found:', user ? { id: user.id, email: user.email, role: user.role, is_active: user.is_active } : null);
+    console.log('User found:', user ? { id: user.id, email: user.email, role: user.role } : null);
 
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    if (!user.is_active) return res.status(403).json({ error: 'Account is deactivated. Contact your administrator.' });
-
-    const valid = await bcrypt.compare(password, user.password_hash);
-    console.log('Password valid:', valid);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
