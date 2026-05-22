@@ -226,15 +226,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS demo_search_limit int NOT NULL DEFAUL
 - Hard timeout: **10 minutes** — if exceeded, `sync_logs` is marked `failed` automatically
 
 ### Stuck Sync Fix (SQL)
-If the admin panel shows "Syncing…" indefinitely (e.g. after a Railway restart mid-sync), run this in Supabase to reset stuck logs:
+If the admin panel shows "Syncing…" indefinitely (e.g. after a Railway restart mid-sync), run either of these in Supabase to reset stuck logs:
 ```sql
+-- Simple reset (marks all stuck syncs as failed)
+UPDATE sync_logs SET status = 'failed' WHERE status = 'started';
+
+-- With detail (preferred)
 UPDATE sync_logs SET status = 'failed', error_message = 'Manually reset', completed_at = now()
 WHERE status = 'started';
 ```
 
 ### Railway Free Tier Notes
 - UN XML is ~50MB — download takes 30–60 seconds on Railway's network
-- The admin panel polls every 5 seconds while sync is running (normal — not a bug)
+- Batched processing (50 records/batch, 1s delay, bulk SQL) is **implemented** — sync completes in under 2 minutes
+- Hard timeout is 10 minutes; if hit, `sync_logs` is automatically marked `failed` (no longer sticks on "Syncing…")
+- The admin panel polls every 5 seconds while sync is running — the flickering is normal, not a bug
 - Auto-sync attempts every Sunday midnight regardless; if it times out, existing data is preserved
 - UAE list syncs reliably (smaller JSON file, faster parse)
 
